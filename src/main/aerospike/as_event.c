@@ -528,9 +528,14 @@ as_event_command_execute_in_loop(as_event_loop* event_loop, as_event_command* cm
 	as_event_command_begin(event_loop, cmd);
 }
 
+void as_batch_log(as_event_command* cmd, const char* msg);
+
 static void
 as_event_command_begin(as_event_loop* event_loop, as_event_command* cmd)
 {
+	if (cmd->type == AS_ASYNC_TYPE_BATCH && cmd->freed) {
+		as_batch_log(cmd, "attempt on freed command!");
+	}
 	cmd->state = AS_ASYNC_STATE_CONNECT;
 
 	if (cmd->partition) {
@@ -702,6 +707,10 @@ as_event_decompress(as_event_command* cmd)
 void
 as_event_socket_timeout(as_event_command* cmd)
 {
+	if (cmd->type == AS_ASYNC_TYPE_BATCH) {
+		as_batch_log(cmd, "socket timeout");
+	}
+
 	if (cmd->flags & AS_ASYNC_FLAGS_EVENT_RECEIVED) {
 		// Event(s) received within socket timeout period.
 		cmd->flags &= ~AS_ASYNC_FLAGS_EVENT_RECEIVED;
@@ -731,6 +740,10 @@ as_event_socket_timeout(as_event_command* cmd)
 		else {
 			as_event_repeat_socket_timer(cmd);
 		}
+
+		if (cmd->type == AS_ASYNC_TYPE_BATCH) {
+			as_batch_log(cmd, "socket timer reset");
+		}
 		return;
 	}
 
@@ -756,6 +769,10 @@ as_event_socket_timeout(as_event_command* cmd)
 void
 as_event_total_timeout(as_event_command* cmd)
 {
+	if (cmd->type == AS_ASYNC_TYPE_BATCH) {
+		as_batch_log(cmd, "total timeout");
+	}
+
 	if (cmd->state == AS_ASYNC_STATE_DELAY_QUEUE) {
 		cmd->state = AS_ASYNC_STATE_QUEUE_ERROR;
 
@@ -1276,6 +1293,10 @@ as_event_command_free(as_event_command* cmd)
 
 	if (cmd->flags & AS_ASYNC_FLAGS_FREE_BUF) {
 		cf_free(cmd->buf);
+	}
+
+	if (cmd->type == AS_ASYNC_TYPE_BATCH) {
+		cmd->freed = 1;
 	}
 
 	cf_free(cmd);

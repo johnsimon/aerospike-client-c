@@ -153,6 +153,8 @@ typedef struct as_event_command {
 	uint8_t state;
 	uint8_t flags;
 	uint8_t flags2;
+	uint8_t tranid;
+	uint8_t freed;
 } as_event_command;
 
 typedef struct {

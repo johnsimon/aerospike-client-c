@@ -512,6 +512,7 @@ example_connect_to_aerospike_with_udf_config(aerospike* p_as,
 		const char* lua_user_path)
 {
 	// Initialize logging.
+	as_log_set_level(AS_LOG_LEVEL_DEBUG);
 	as_log_set_callback(example_log_callback);
 
 	// Initialize default lua configuration.
