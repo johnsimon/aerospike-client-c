@@ -1150,7 +1150,7 @@ as_batch_read_command_create(
 	cmd->state = AS_ASYNC_STATE_UNREGISTERED;
 	cmd->flags = flags;
 	cmd->flags2 = policy->deserialize ? AS_ASYNC_FLAGS2_DESERIALIZE : 0;
-	cmd->tranid = (uint8_t)index + 1;
+	cmd->tranid = index + 1;
 	cmd->freed = 0;
 	return cmd;
 }
@@ -1543,7 +1543,8 @@ as_batch_retry(as_command* parent, as_error* err)
 
 static inline as_event_command*
 as_batch_retry_command_create(
-	as_event_command* parent, as_node* node, size_t size, uint64_t deadline, uint32_t index
+	as_event_command* parent, as_node* node, size_t size, uint64_t deadline, uint8_t flags,
+	uint32_t index
 	)
 {
 	// Allocate enough memory to cover, then, round up memory size in 8KB increments to reduce
@@ -1569,15 +1570,15 @@ as_batch_retry_command_create(
 	cmd->type = AS_ASYNC_TYPE_BATCH;
 	cmd->proto_type = AS_MESSAGE_TYPE;
 	cmd->state = AS_ASYNC_STATE_UNREGISTERED;
-	cmd->flags = parent->flags;
+	cmd->flags = flags;
 	cmd->flags2 = parent->flags2;
 	cmd->tranid = parent->tranid * 10 + index + 1;
 	cmd->freed = 0;
 
 	as_event_executor* e = cmd->udata;
-	as_log_debug("batch(%" PRIu64 ",%p,%u,%s,%u,%u,%u,%u) create new command",
-		e->cluster_key, cmd, cmd->tranid, as_node_get_address_string(cmd->node),
-		cmd->state, cmd->freed, parent->socket_timeout, (uint32_t)deadline);
+	as_log_debug("batch(%" PRIu64 ",%u,%u,%p,%u,%s,%u,%u,%u,%u,%u) create new command",
+		e->cluster_key, e->count, e->max, cmd, cmd->tranid, as_node_get_address_string(cmd->node),
+		cmd->state, cmd->freed, cmd->iteration, parent->socket_timeout, (uint32_t)deadline);
 
 	return cmd;
 }
@@ -1586,9 +1587,16 @@ void
 as_batch_log(as_event_command* cmd, const char* msg)
 {
 	as_event_executor* e = cmd->udata;
-	as_log_debug("batch(%" PRIu64 ",%p,%u,%s,%u,%u) %s",
-		e->cluster_key, cmd, cmd->tranid, as_node_get_address_string(cmd->node),
-		cmd->state, cmd->freed, msg);
+	as_log_debug("batch(%" PRIu64 ",%u,%u,%p,%u,%s,%u,%u,%u) %s",
+		e->cluster_key, e->count, e->max, cmd, cmd->tranid, as_node_get_address_string(cmd->node),
+		cmd->state, cmd->freed, cmd->iteration, msg);
+}
+
+void
+as_batch_exec_log(as_event_executor* e, const char* msg)
+{
+	as_log_debug("batchexec(%" PRIu64 ",%u,%u) %s",
+		e->cluster_key, e->count, e->max, msg);
 }
 
 int
@@ -1596,16 +1604,16 @@ as_batch_retry_async(as_event_command* parent, bool timeout)
 {
 	as_batch_log(parent, "retry");
 
-	if (!(parent->replica == AS_POLICY_REPLICA_SEQUENCE ||
-		  parent->replica == AS_POLICY_REPLICA_PREFER_RACK)) {
-		as_batch_log(parent, "replica");
-		return 1;  // Go through normal retry.
-	}
-
 	as_async_batch_executor* executor = parent->udata; // udata is overloaded to contain executor.
 
 	if (! executor->executor.valid) {
 		as_batch_log(parent, "executor invalid");
+		return -2;  // Defer to original error.
+	}
+
+	if (!(parent->replica == AS_POLICY_REPLICA_SEQUENCE ||
+		  parent->replica == AS_POLICY_REPLICA_PREFER_RACK)) {
+		as_batch_log(parent, "replica");
 		return 1;  // Go through normal retry.
 	}
 
@@ -1833,7 +1841,11 @@ as_batch_retry_async(as_event_command* parent, bool timeout)
 	pthread_mutex_lock(&e->lock);
 	e->max += batch_nodes.size - 1;
 	e->max_concurrent = e->max;
+	e->queued = e->max;
 	pthread_mutex_unlock(&e->lock);
+
+	uint8_t flags = AS_ASYNC_FLAGS_READ | (parent->flags & AS_ASYNC_FLAGS_MASTER) |
+					(parent->flags & AS_ASYNC_FLAGS_MASTER_SC);
 
 	for (uint32_t i = 0; i < batch_nodes.size; i++) {
 		as_batch_node* batch_node = as_vector_get(&batch_nodes, i);
@@ -1845,12 +1857,13 @@ as_batch_retry_async(as_event_command* parent, bool timeout)
 
 		if (! (policy.base.compress && size > AS_COMPRESS_THRESHOLD)) {
 			as_event_command* cmd = as_batch_retry_command_create(parent, batch_node->node, size,
-									deadline, i);
+									deadline, flags, i);
 
 			cmd->write_len = (uint32_t)as_batch_index_records_write(records, &batch_node->offsets,
 									&policy, cmd->buf, field_count_header, pred_size, pred_field);
 
-			status = as_event_command_execute(cmd, &err);
+			// Retry command at the end of the queue so other commands have a chance to run first.
+			status = as_event_command_send(cmd, &err);
 		}
 		else {
 			// Send compressed command.
@@ -1864,7 +1877,7 @@ as_batch_retry_async(as_event_command* parent, bool timeout)
 			size_t comp_size = as_command_compress_max_size(size);
 
 			as_event_command* cmd = as_batch_retry_command_create(parent, batch_node->node,
-									comp_size, deadline, i);
+									comp_size, deadline, flags, i);
 
 			// Compress buffer and execute.
 			status = as_command_compress(&err, buf, size, cmd->buf, &comp_size);
@@ -1878,7 +1891,9 @@ as_batch_retry_async(as_event_command* parent, bool timeout)
 			}
 
 			cmd->write_len = (uint32_t)comp_size;
-			status = as_event_command_execute(cmd, &err);
+
+			// Retry command at the end of the queue so other commands have a chance to run first.
+			status = as_event_command_send(cmd, &err);
 		}
 
 		if (status != AEROSPIKE_OK) {
@@ -1889,7 +1904,7 @@ as_batch_retry_async(as_event_command* parent, bool timeout)
 		}
 	}
 
-	as_batch_log(parent, "retry successful");
+	as_batch_log(parent, "new commands queued");
 	as_batch_release_nodes_after_async(&batch_nodes);
 
 	// Close parent command.

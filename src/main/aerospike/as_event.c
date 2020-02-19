@@ -346,8 +346,8 @@ as_event_destroy_loops()
 static void as_event_command_execute_in_loop(as_event_loop* event_loop, as_event_command* cmd);
 static void as_event_command_begin(as_event_loop* event_loop, as_event_command* cmd);
 
-as_status
-as_event_command_execute(as_event_command* cmd, as_error* err)
+static inline void
+as_event_command_init(as_event_command* cmd)
 {
 	// Initialize read buffer (buf) to be located after write buffer.
 	cmd->write_offset = (uint32_t)(cmd->buf - (uint8_t*)cmd);
@@ -355,32 +355,46 @@ as_event_command_execute(as_event_command* cmd, as_error* err)
 	cmd->command_sent_counter = 0;
 	cmd->conn = NULL;
 	cmd->proto_type_rcv = 0;
+}
 
+as_status
+as_event_command_execute(as_event_command* cmd, as_error* err)
+{
 	as_event_loop* event_loop = cmd->event_loop;
 
 	// Avoid recursive error death spiral by forcing command to be queued to
 	// event loop when consecutive recursive errors reaches an approximate limit.
 	if (as_in_event_loop(event_loop->thread) && event_loop->errors < 5) {
 		// We are already in event loop thread, so start processing.
+		as_event_command_init(cmd);
 		as_event_command_execute_in_loop(event_loop, cmd);
+		return AEROSPIKE_OK;
 	}
 	else {
 		// Send command through queue so it can be executed in event loop thread.
-		if (cmd->total_deadline > 0) {
-			// Convert total timeout to deadline.
-			cmd->total_deadline += cf_getms();
-		}
-		cmd->state = AS_ASYNC_STATE_REGISTERED;
+		return as_event_command_send(cmd, err);
+	}
+}
 
-		if (! as_event_execute(event_loop, (as_event_executable)as_event_command_execute_in_loop, cmd)) {
-			event_loop->errors++;  // Not in event loop thread, so not exactly accurate.
+as_status
+as_event_command_send(as_event_command* cmd, as_error* err)
+{
+	as_event_command_init(cmd);
 
-			if (cmd->node) {
-				as_node_release(cmd->node);
-			}
-			cf_free(cmd);
-			return as_error_set_message(err, AEROSPIKE_ERR_CLIENT, "Failed to queue command");
+	if (cmd->total_deadline > 0) {
+		// Convert total timeout to deadline.
+		cmd->total_deadline += cf_getms();
+	}
+	cmd->state = AS_ASYNC_STATE_REGISTERED;
+
+	if (! as_event_execute(cmd->event_loop, (as_event_executable)as_event_command_execute_in_loop, cmd)) {
+		cmd->event_loop->errors++;  // May not be in event loop thread, so not exactly accurate.
+
+		if (cmd->node) {
+			as_node_release(cmd->node);
 		}
+		cf_free(cmd);
+		return as_error_set_message(err, AEROSPIKE_ERR_CLIENT, "Failed to queue command");
 	}
 	return AEROSPIKE_OK;
 }
@@ -529,6 +543,7 @@ as_event_command_execute_in_loop(as_event_loop* event_loop, as_event_command* cm
 }
 
 void as_batch_log(as_event_command* cmd, const char* msg);
+void as_batch_exec_log(as_event_executor* e, const char* msg);
 
 static void
 as_event_command_begin(as_event_loop* event_loop, as_event_command* cmd)
@@ -803,6 +818,7 @@ as_event_command_retry(as_event_command* cmd, bool timeout)
 {
 	// Check max retries.
 	if (++(cmd->iteration) > cmd->max_retries) {
+		as_batch_log(cmd, "max retries reached");
 		return false;
 	}
 
@@ -925,6 +941,8 @@ as_event_executor_error(as_event_executor* executor, as_error* err, uint32_t com
 	bool complete = executor->count == executor->max;
 	pthread_mutex_unlock(&executor->lock);
 
+	as_batch_exec_log(executor, err->message);
+
 	if (complete) {
 		// All commands have completed.
 		// If scan or query user callback already returned false,
@@ -941,6 +959,7 @@ as_event_executor_error(as_event_executor* executor, as_error* err, uint32_t com
 				executor->complete_fn(executor);
 			}
 		}
+		as_batch_exec_log(executor, "executor destroy");
 		as_event_executor_destroy(executor);
 	}
 	else if (first_error) {
@@ -953,6 +972,7 @@ as_event_executor_error(as_event_executor* executor, as_error* err, uint32_t com
 void
 as_event_executor_cancel(as_event_executor* executor, uint32_t queued_count)
 {
+	as_batch_exec_log(executor, "executor cancel");
 	// Cancel group of commands that already have been queued.
 	// We are cancelling commands running in the event loop thread when this method
 	// is NOT running in the event loop thread.  Enforce thread-safety.
@@ -968,6 +988,7 @@ as_event_executor_cancel(as_event_executor* executor, uint32_t queued_count)
 	if (complete) {
 		// Do not call user listener because an error will be returned
 		// on initial batch, scan or query call.
+		as_batch_exec_log(executor, "executor cancel destroy");
 		as_event_executor_destroy(executor);
 	}
 }
@@ -996,9 +1017,11 @@ as_event_executor_complete(as_event_command* cmd)
 		// Determine if a new command needs to be started.
 		if (start_new_command) {
 			if (executor->cluster_key) {
+				as_batch_log(cmd, "Start batch validate???");
 				as_query_validate_next_async(executor, next);
 			}
 			else {
+				as_batch_log(cmd, "Start new batch command???");
 				as_error err;
 				executor->queued++;
 

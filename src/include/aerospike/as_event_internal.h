@@ -146,6 +146,7 @@ typedef struct as_event_command {
 	uint32_t read_capacity;
 	uint32_t len;
 	uint32_t pos;
+	uint32_t tranid;
 
 	uint8_t type;
 	uint8_t proto_type;
@@ -153,7 +154,6 @@ typedef struct as_event_command {
 	uint8_t state;
 	uint8_t flags;
 	uint8_t flags2;
-	uint8_t tranid;
 	uint8_t freed;
 } as_event_command;
 
@@ -185,6 +185,9 @@ typedef struct as_event_executor {
 
 as_status
 as_event_command_execute(as_event_command* cmd, as_error* err);
+
+as_status
+as_event_command_send(as_event_command* cmd, as_error* err);
 
 bool
 as_event_proto_parse(as_event_command* cmd, as_proto* proto);
