@@ -140,6 +140,7 @@ typedef struct as_event_command {
 	cf_ll_element pipe_link;
 	
 	uint8_t* buf;
+	uint32_t tranid;
 	uint32_t command_sent_counter;
 	uint32_t write_offset;
 	uint32_t write_len;
@@ -153,6 +154,7 @@ typedef struct as_event_command {
 	uint8_t state;
 	uint8_t flags;
 	uint8_t flags2;
+	uint8_t freed;
 } as_event_command;
 
 typedef struct {
@@ -801,6 +803,9 @@ as_event_connection_timeout(as_event_command* cmd, as_async_conn_pool* pool)
 	}
 }
 
+void
+as_event_log(as_event_command* cmd, const char* msg);
+
 static inline bool
 as_event_socket_retry(as_event_command* cmd)
 {
@@ -808,6 +813,7 @@ as_event_socket_retry(as_event_command* cmd)
 		return false;
 	}
 
+	as_event_log(cmd, "socket error");
 	as_event_stop_watcher(cmd, cmd->conn);
 	as_event_release_async_connection(cmd);
 	return as_event_command_retry(cmd, false);

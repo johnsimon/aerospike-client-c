@@ -873,6 +873,8 @@ as_event_connect_error(as_event_command* cmd, as_address* primary, int rv)
 	as_event_decr_conn(cmd);
 	cmd->event_loop->errors++;
 
+	as_event_log(cmd, "connect error");
+
 	if (as_event_command_retry(cmd, false)) {
 		return;
 	}

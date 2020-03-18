@@ -198,6 +198,8 @@ as_create_event_loops(as_error* err, as_policy_event* policy, uint32_t capacity,
 bool
 as_event_set_external_loop_capacity(uint32_t capacity)
 {
+	as_log_debug("set event loop capacity: %u", capacity);
+
 	as_error err;
 	as_status status = as_event_initialize_loops(&err, capacity);
 
@@ -254,6 +256,10 @@ as_set_external_event_loop(as_error* err, as_policy_event* policy, void* loop, a
 	as_event_initialize_loop(policy, event_loop, current);
 	event_loop->loop = loop;
 	event_loop->thread = pthread_self();  // Current thread must be same as event loop thread!
+
+	as_log_debug("set event loop: %u,%d,%u,%p,%p", event_loop->index,
+		event_loop->max_commands_in_process, event_loop->max_commands_in_queue,
+		loop, event_loop->thread);
 
 	as_event_register_external_loop(event_loop);
 
@@ -335,6 +341,14 @@ as_event_destroy_loops()
  * PRIVATE FUNCTIONS
  *****************************************************************************/
 
+void
+as_event_log(as_event_command* cmd, const char* msg)
+{
+	as_log_debug("cmd(%p,%u,%u,%u,%u,%u,%u,%s) %s",
+		cmd, cmd->tranid, cmd->event_loop->index, cmd->type, cmd->state, cmd->freed,
+		cmd->iteration, as_node_get_address_string(cmd->node), msg);
+}
+
 static void as_event_command_begin(as_event_loop* event_loop, as_event_command* cmd);
 static void as_event_execute_from_delay_queue(as_event_loop* event_loop);
 
@@ -368,6 +382,8 @@ as_event_command_send(as_event_command* cmd, as_error* err)
 	return AEROSPIKE_OK;
 }
 
+static uint32_t as_tran_counter = 0;
+
 void
 as_event_command_execute_in_loop(as_event_loop* event_loop, as_event_command* cmd)
 {
@@ -377,6 +393,8 @@ as_event_command_execute_in_loop(as_event_loop* event_loop, as_event_command* cm
 	cmd->command_sent_counter = 0;
 	cmd->conn = NULL;
 	cmd->proto_type_rcv = 0;
+	cmd->tranid = as_aaf_uint32(&as_tran_counter, 1);
+	cmd->freed = 0;
 
 	if (cmd->cluster->pending[event_loop->index]++ == -1) {
 		as_error err;
@@ -513,6 +531,10 @@ as_event_execute_from_delay_queue(as_event_loop* event_loop)
 static void
 as_event_command_begin(as_event_loop* event_loop, as_event_command* cmd)
 {
+	if (cmd->freed) {
+		as_event_log(cmd, "event triggered on freed command!");
+	}
+
 	cmd->state = AS_ASYNC_STATE_CONNECT;
 
 	if (cmd->partition) {
@@ -575,6 +597,8 @@ as_event_command_begin(as_event_loop* event_loop, as_event_command* cmd)
 	}
 
 	event_loop->errors++;
+
+	as_event_log(cmd, "max conns exceeded");
 
 	// AEROSPIKE_ERR_NO_MORE_CONNECTIONS should be handled as timeout (true) because
 	// it's not an indicator of impending data migration.  This retry is recursive.
@@ -684,6 +708,8 @@ as_event_decompress(as_event_command* cmd)
 void
 as_event_socket_timeout(as_event_command* cmd)
 {
+	as_event_log(cmd, "socket timeout");
+
 	if (cmd->flags & AS_ASYNC_FLAGS_EVENT_RECEIVED) {
 		// Event(s) received within socket timeout period.
 		cmd->flags &= ~AS_ASYNC_FLAGS_EVENT_RECEIVED;
@@ -713,6 +739,7 @@ as_event_socket_timeout(as_event_command* cmd)
 		else {
 			as_event_repeat_socket_timer(cmd);
 		}
+		as_event_log(cmd, "socket timer reset");
 		return;
 	}
 
@@ -738,6 +765,8 @@ as_event_socket_timeout(as_event_command* cmd)
 void
 as_event_total_timeout(as_event_command* cmd)
 {
+	as_event_log(cmd, "total timeout");
+
 	if (cmd->state == AS_ASYNC_STATE_DELAY_QUEUE) {
 		cmd->state = AS_ASYNC_STATE_QUEUE_ERROR;
 
@@ -768,6 +797,7 @@ as_event_command_retry(as_event_command* cmd, bool timeout)
 {
 	// Check max retries.
 	if (++(cmd->iteration) > cmd->max_retries) {
+		as_event_log(cmd, "max retries reached");
 		return false;
 	}
 
@@ -822,6 +852,8 @@ as_event_command_retry(as_event_command* cmd, bool timeout)
 			return rv >= -1;
 		}
 	}
+
+	as_event_log(cmd, "retry command");
 
 	// Retry command at the end of the queue so other commands have a chance to run first.
 	return as_event_execute(cmd->event_loop, (as_event_executable)as_event_command_begin, cmd);
@@ -1260,6 +1292,8 @@ as_event_command_free(as_event_command* cmd)
 		cf_free(cmd->buf);
 	}
 
+	cmd->freed = 1;
+
 	cf_free(cmd);
 
 	if (event_loop->max_commands_in_process > 0 && ! event_loop->using_delay_queue) {
@@ -1379,6 +1413,8 @@ static void
 as_event_close_cluster_cb(as_event_loop* event_loop, as_event_close_state* state)
 {
 	int pending = state->cluster->pending[event_loop->index];
+	as_log_debug("cluster event loop pending: %p,%u,%d", state->cluster, event_loop->index,
+		pending);
 
 	if (pending < 0) {
 		// Cluster's event loop connections are already closed.
@@ -1400,6 +1436,8 @@ as_event_close_cluster_cb(as_event_loop* event_loop, as_event_close_state* state
 void
 as_event_close_cluster(as_cluster* cluster)
 {
+	as_log_debug("close async cluster: %p", cluster);
+
 	if (as_event_loop_size == 0) {
 		return;
 	}
@@ -1441,8 +1479,13 @@ as_event_close_cluster(as_cluster* cluster)
 	// Deadlock would occur if we wait from an event loop thread.
 	// Only wait when not in event loop thread.
 	if (monitor) {
+		as_log_debug("wait for cluster commands to finish: %p", cluster);
 		as_monitor_wait(monitor);
 		as_monitor_destroy(monitor);
 		cf_free(monitor);
+		as_log_debug("cluster destroyed");
+	}
+	else {
+		as_log_debug("can't wait for cluster commands to finish: %p", cluster);
 	}
 }
