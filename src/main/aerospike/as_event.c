@@ -40,6 +40,7 @@ int as_event_send_buffer_size = 0;
 int as_event_recv_buffer_size = 0;
 bool as_event_threads_created = false;
 bool as_event_single_thread = false;
+static pthread_mutex_t as_event_lock = PTHREAD_MUTEX_INITIALIZER;
 
 as_status aerospike_library_init(as_error* err);
 int as_batch_retry_async(as_event_command* cmd, bool timeout);
@@ -246,12 +247,18 @@ as_set_external_event_loop(as_error* err, as_policy_event* policy, void* loop, a
 		as_policy_event_init(policy);
 	}
 
-	uint32_t current = as_faa_uint32(&as_event_loop_size, 1);
-	
+	// Synchronize event loop registration calls that are coming from separate
+	// event loop threads.
+	pthread_mutex_lock(&as_event_lock);
+
+	uint32_t current = as_event_loop_size;
+
 	if (current >= as_event_loop_capacity) {
-		return as_error_update(err, AEROSPIKE_ERR_CLIENT, "Failed to add external loop. Capacity is %u", as_event_loop_capacity);
+		pthread_mutex_unlock(&as_event_lock);
+		return as_error_update(err, AEROSPIKE_ERR_CLIENT,
+			"Failed to add external loop. Capacity is %u", as_event_loop_capacity);
 	}
-	
+
 	as_event_loop* event_loop = &as_event_loops[current];
 	as_event_initialize_loop(policy, event_loop, current);
 	event_loop->loop = loop;
@@ -271,6 +278,12 @@ as_set_external_event_loop(as_error* err, as_policy_event* policy, void* loop, a
 		// Warning: not synchronized with as_event_loop_get()
 		as_event_loops[current - 1].next = event_loop;
 	}
+
+	// Set as_event_loop_size now that event loop has been fully initialized.
+	as_event_loop_size = current + 1;
+
+	pthread_mutex_unlock(&as_event_lock);
+
 	*event_loop_out = event_loop;
 	return AEROSPIKE_OK;
 }

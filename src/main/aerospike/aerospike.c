@@ -33,7 +33,7 @@
 #include <windows.h>
 #endif
 
-pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
 
 extern uint32_t as_event_loop_capacity;
 extern bool as_event_single_thread;
