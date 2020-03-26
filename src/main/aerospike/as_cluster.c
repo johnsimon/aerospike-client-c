@@ -993,8 +993,9 @@ as_cluster_create(as_config* config, as_error* err, as_cluster** cluster_out)
 	
 	as_cluster* cluster = cf_malloc(sizeof(as_cluster));
 	bool has_user = (config->user[0] != 0);
-	as_log_debug("create cluster: %p,%u,%d", cluster, config->async_max_conns_per_node,
-		(int)has_user);
+	as_log_debug("create cluster: %p,%u,%u,%u,%u,%d", cluster, config->conn_pools_per_node,
+		config->max_conns_per_node, config->async_max_conns_per_node,
+		config->pipe_max_conns_per_node, (int)has_user);
 
 	memset(cluster, 0, sizeof(as_cluster));
 	cluster->auth_mode = config->auth_mode;

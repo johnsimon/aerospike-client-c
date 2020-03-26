@@ -357,8 +357,8 @@ as_event_destroy_loops()
 void
 as_event_log(as_event_command* cmd, const char* msg)
 {
-	as_log_debug("cmd(%p,%u,%u,%u,%u,%u,%u,%s) %s",
-		cmd, cmd->tranid, cmd->event_loop->index, cmd->type, cmd->state, cmd->freed,
+	as_log_debug("cmd(%p,%u,%u,%u,%u,%u,%u,%u,%s) %s",
+		cmd, cmd->tranid, cmd->event_loop->index, cmd->type, cmd->state, cmd->flags, cmd->freed,
 		cmd->iteration, as_node_get_address_string(cmd->node), msg);
 }
 
@@ -866,10 +866,68 @@ as_event_command_retry(as_event_command* cmd, bool timeout)
 		}
 	}
 
-	as_event_log(cmd, "retry command");
+	as_event_log(cmd, "initiate retry");
+
+	// Disable timeout.
+	if (cmd->flags & AS_ASYNC_FLAGS_HAS_TIMER) {
+		as_event_stop_timer(cmd);
+	}
+	else {
+		cmd->flags |= AS_ASYNC_FLAGS_HAS_TIMER;
+	}
 
 	// Retry command at the end of the queue so other commands have a chance to run first.
-	return as_event_execute(cmd->event_loop, (as_event_executable)as_event_command_begin, cmd);
+	// Initialize event to eventually call as_event_execute_retry().
+	as_event_init_retry_timer(cmd);
+	return true;
+}
+
+void
+as_event_execute_retry(as_event_command* cmd)
+{
+	as_event_log(cmd, "execute retry");
+
+	// Restore timer that was reset for retry.
+	if (cmd->total_deadline > 0) {
+		// Check total timeout.
+		uint64_t now = cf_getms();
+
+		if (now >= cmd->total_deadline) {
+			as_event_total_timeout(cmd);
+			return;
+		}
+
+		uint64_t remaining = cmd->total_deadline - now;
+
+		if (cmd->flags & AS_ASYNC_FLAGS_USING_SOCKET_TIMER) {
+			if (remaining <= cmd->socket_timeout) {
+				// Restore total timer.
+				cmd->flags &= ~AS_ASYNC_FLAGS_USING_SOCKET_TIMER;
+				as_event_init_total_timer(cmd, remaining);
+			}
+			else {
+				// Restore socket timer.
+				cmd->flags &= ~AS_ASYNC_FLAGS_EVENT_RECEIVED;
+				as_event_init_socket_timer(cmd);
+			}
+		}
+		else {
+			// Restore total timer.
+			as_event_init_total_timer(cmd, remaining);
+		}
+	}
+	else if (cmd->flags & AS_ASYNC_FLAGS_USING_SOCKET_TIMER) {
+		// Restore socket timer.
+		cmd->flags &= ~AS_ASYNC_FLAGS_EVENT_RECEIVED;
+		as_event_init_socket_timer(cmd);
+	}
+	else {
+		// Restore no timer.
+		cmd->flags &= ~AS_ASYNC_FLAGS_HAS_TIMER;
+	}
+
+	// Retry command.
+	as_event_command_begin(cmd->event_loop, cmd);
 }
 
 static inline void
