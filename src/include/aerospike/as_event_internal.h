@@ -370,6 +370,7 @@ static inline void
 as_event_stop_watcher(as_event_command* cmd, as_event_connection* conn)
 {
 	ev_io_stop(cmd->event_loop->loop, &conn->watcher);
+	conn->watching = 0;
 }
 
 static inline void
@@ -476,6 +477,7 @@ as_event_stop_watcher(as_event_command* cmd, as_event_connection* conn)
 {
 	// uv_read_stop() will handle case where read is already stopped.
 	uv_read_stop((uv_stream_t*)conn);
+	conn->watching = 0;
 }
 
 static inline void
@@ -521,9 +523,12 @@ as_event_validate_connection(as_event_connection* conn, uint64_t max_socket_idle
 	return as_socket_validate(&conn->socket, max_socket_idle_ns);
 }
 
+void as_libevent_validate_free_conn(as_event_connection* conn);
+
 static inline void
 as_event_close_connection(as_event_connection* conn)
 {
+	as_libevent_validate_free_conn(conn);
 	as_socket_close(&conn->socket);
 	cf_free(conn);
 }
@@ -594,6 +599,7 @@ static inline void
 as_event_stop_watcher(as_event_command* cmd, as_event_connection* conn)
 {
 	event_del(&conn->watcher);
+	conn->watching = 0;
 }
 
 static inline void
@@ -820,6 +826,8 @@ as_event_decr_conn(as_event_command* cmd)
 	as_queue_decr_total(&pool->queue);
 }
 
+#include <aerospike/as_log_macros.h>
+
 static inline void
 as_event_connection_timeout(as_event_command* cmd, as_async_conn_pool* pool)
 {
@@ -831,6 +839,7 @@ as_event_connection_timeout(as_event_command* cmd, as_async_conn_pool* pool)
 			as_event_release_connection(conn, pool);
 		}
 		else {
+			as_log_debug("free unwatched connection %p", conn);
 			cf_free(conn);
 			as_queue_decr_total(&pool->queue);
 			pool->closed++;

@@ -960,6 +960,21 @@ as_libevent_retry(evutil_socket_t sock, short events, void* udata)
 	as_event_execute_retry(udata);
 }
 
+#include <signal.h>
+
+void
+as_libevent_validate_free_conn(as_event_connection* conn)
+{
+	as_log_debug("free connection %p", conn);
+
+	if (conn->watching > 0) {
+		if (evtimer_pending(&conn->watcher, NULL)) {
+			as_log_debug("free connection with pending watcher %p. CRASH!", conn);
+			raise(SIGABRT);
+		}
+	}
+}
+
 static void
 as_event_close_connections(as_node* node, as_async_conn_pool* pool)
 {

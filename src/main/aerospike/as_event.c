@@ -1345,9 +1345,21 @@ as_event_command_parse_info(as_event_command* cmd)
 	return true;
 }
 
+#include <signal.h>
+
 void
 as_event_command_free(as_event_command* cmd)
 {
+	if (cmd->flags & AS_ASYNC_FLAGS_HAS_TIMER) {
+		if (evtimer_pending(&cmd->timer, NULL)) {
+			as_event_log(cmd, "command free with pending timer. CRASH!");
+			raise(SIGABRT);
+		}
+	}
+	else {
+		as_event_log(cmd, "command free with no timer");
+	}
+
 	as_event_loop* event_loop = cmd->event_loop;
 
 	if (cmd->state != AS_ASYNC_STATE_QUEUE_ERROR) {
