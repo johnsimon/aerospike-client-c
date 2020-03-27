@@ -27,6 +27,7 @@
 #include <aerospike/as_shm_cluster.h>
 #include <citrusleaf/alloc.h>
 #include <pthread.h>
+#include <signal.h>
 
 /******************************************************************************
  * GLOBALS
@@ -264,7 +265,7 @@ as_set_external_event_loop(as_error* err, as_policy_event* policy, void* loop, a
 	event_loop->loop = loop;
 	event_loop->thread = pthread_self();  // Current thread must be same as event loop thread!
 
-	as_log_debug("set event loop: %u,%d,%u,%p,%p", event_loop->index,
+	as_log_debug("set event loop: %p,%u,%d,%u,%p,%p", event_loop, event_loop->index,
 		event_loop->max_commands_in_process, event_loop->max_commands_in_queue,
 		loop, event_loop->thread);
 
@@ -357,9 +358,11 @@ as_event_destroy_loops()
 void
 as_event_log(as_event_command* cmd, const char* msg)
 {
+	const char* s = cmd->node ? as_node_get_address_string(cmd->node) : "";
+
 	as_log_debug("cmd(%p,%u,%u,%u,%u,%u,%u,%u,%s) %s",
 		cmd, cmd->tranid, cmd->event_loop->index, cmd->type, cmd->state, cmd->flags, cmd->freed,
-		cmd->iteration, as_node_get_address_string(cmd->node), msg);
+		cmd->iteration, s, msg);
 }
 
 static void as_event_command_begin(as_event_loop* event_loop, as_event_command* cmd);
@@ -440,6 +443,13 @@ as_event_command_execute_in_loop(as_event_loop* event_loop, as_event_command* cm
 	}
 
 	if (event_loop->max_commands_in_process > 0) {
+		// Should NEVER HAPPEN in this particular debug case.
+		as_event_log(cmd, "event loop problems");
+		as_log_debug("event loop(%p,%d,%d,%u,%d,%u) unexpected. CRASH", event_loop, event_loop->index,
+			event_loop->max_commands_in_process, event_loop->max_commands_in_queue,
+			event_loop->pending, event_loop->errors);
+		raise(SIGABRT);
+
 		// Delay queue takes precedence over new commands.
 		as_event_execute_from_delay_queue(event_loop);
 
@@ -1344,8 +1354,6 @@ as_event_command_parse_info(as_event_command* cmd)
 	}
 	return true;
 }
-
-#include <signal.h>
 
 void
 as_event_command_free(as_event_command* cmd)
