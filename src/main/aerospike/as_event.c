@@ -360,9 +360,9 @@ as_event_log(as_event_command* cmd, const char* msg)
 {
 	const char* s = cmd->node ? as_node_get_address_string(cmd->node) : "";
 
-	as_log_debug("cmd(%p,%u,%u,%u,%u,%u,%u,%u,%s) %s",
+	as_log_debug("cmd(%p,%u,%u,%u,%u,%u,%u,%u,%d,%s) %s",
 		cmd, cmd->tranid, cmd->event_loop->index, cmd->type, cmd->state, cmd->flags, cmd->freed,
-		cmd->iteration, s, msg);
+		cmd->iteration, (int)cmd->replica, s, msg);
 }
 
 static void as_event_command_begin(as_event_loop* event_loop, as_event_command* cmd);
@@ -387,6 +387,7 @@ as_event_command_send(as_event_command* cmd, as_error* err)
 	cmd->state = AS_ASYNC_STATE_REGISTERED;
 
 	if (! as_event_execute(cmd->event_loop, (as_event_executable)as_event_command_execute_in_loop, cmd)) {
+		as_log_debug("failed to queue command %p", cmd);
 		cmd->event_loop->errors++;  // May not be in event loop thread, so not exactly accurate.
 
 		if (cmd->node) {
@@ -413,6 +414,7 @@ as_event_command_execute_in_loop(as_event_loop* event_loop, as_event_command* cm
 	cmd->freed = 0;
 
 	if (cmd->cluster->pending[event_loop->index]++ == -1) {
+		as_event_log(cmd, "cluster closed");
 		as_error err;
 		as_error_set_message(&err, AEROSPIKE_ERR_CLIENT, "Cluster has been closed");
 		as_event_prequeue_error(event_loop, cmd, &err);
@@ -428,6 +430,7 @@ as_event_command_execute_in_loop(as_event_loop* event_loop, as_event_command* cm
 			// Command was queued to event loop thread.
 			if (now >= cmd->total_deadline) {
 				// Command already timed out.
+				as_event_log(cmd, "queue timeout");
 				as_error err;
 				as_error_set_message(&err, AEROSPIKE_ERR_TIMEOUT, "Register timeout");
 				as_event_prequeue_error(event_loop, cmd, &err);
@@ -570,6 +573,7 @@ as_event_command_begin(as_event_loop* event_loop, as_event_command* cmd)
 										  cmd->flags & AS_ASYNC_FLAGS_MASTER, cmd->iteration > 0);
 
 		if (! cmd->node) {
+			as_event_log(cmd, "node could not be found");
 			as_error err;
 			as_error_update(&err, AEROSPIKE_ERR_INVALID_NODE, "Node not found for partition %s",
 							cmd->ns);
@@ -1365,7 +1369,10 @@ as_event_command_free(as_event_command* cmd)
 		}
 	}
 	else {
-		as_event_log(cmd, "command free with no timer");
+		// Queue errors are now logged upstream.
+		if (cmd->state != AS_ASYNC_STATE_QUEUE_ERROR) {
+			as_event_log(cmd, "command free with no timer");
+		}
 	}
 
 	as_event_loop* event_loop = cmd->event_loop;
