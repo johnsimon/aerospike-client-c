@@ -360,9 +360,9 @@ as_event_log(as_event_command* cmd, const char* msg)
 {
 	const char* s = cmd->node ? as_node_get_address_string(cmd->node) : "";
 
-	as_log_debug("cmd(%p,%u,%u,%u,%u,%u,%u,%u,%d,%s) %s",
-		cmd, cmd->tranid, cmd->event_loop->index, cmd->type, cmd->state, cmd->flags, cmd->freed,
-		cmd->iteration, (int)cmd->replica, s, msg);
+	as_log_debug("cmd(%p,%u,%u,%d,%u,%u,%u,%u,%u,%d,%s) %s",
+		cmd, cmd->tranid, cmd->event_loop->index, cmd->event_loop->pending, cmd->type, cmd->state,
+		cmd->flags, cmd->freed, cmd->iteration, (int)cmd->replica, s, msg);
 }
 
 static void as_event_command_begin(as_event_loop* event_loop, as_event_command* cmd);
