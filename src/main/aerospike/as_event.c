@@ -265,8 +265,8 @@ as_set_external_event_loop(as_error* err, as_policy_event* policy, void* loop, a
 	event_loop->loop = loop;
 	event_loop->thread = pthread_self();  // Current thread must be same as event loop thread!
 
-	as_log_debug("set event loop: %p,%u,%d,%u,%p,%p", event_loop, event_loop->index,
-		event_loop->max_commands_in_process, event_loop->max_commands_in_queue,
+	as_log_debug("set event loop: %p,%p,%u,%d,%u,%p,%p", event_loop, &event_loop->wakeup,
+		event_loop->index, event_loop->max_commands_in_process, event_loop->max_commands_in_queue,
 		loop, event_loop->thread);
 
 	as_event_register_external_loop(event_loop);
