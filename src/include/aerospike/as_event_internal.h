@@ -474,8 +474,9 @@ static inline void
 as_event_stop_watcher(as_event_command* cmd, as_event_connection* conn)
 {
 	// uv_read_stop() will handle case where read is already stopped.
+	// Do not set watching to zero because conn is still initialized and active.
+	// libuv works differently here.
 	uv_read_stop((uv_stream_t*)conn);
-	conn->watching = 0;
 }
 
 static inline void
