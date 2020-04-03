@@ -351,7 +351,7 @@ as_event_repeat_socket_timer(as_event_command* cmd)
 }
 
 static inline void
-as_event_init_retry_timer(as_event_command* cmd)
+as_event_set_retry_timer(as_event_command* cmd)
 {
 	ev_timer_init(&cmd->timer, as_ev_retry, 0.0, 0.0);
 	cmd->timer.data = cmd;
@@ -457,10 +457,8 @@ as_event_repeat_socket_timer(as_event_command* cmd)
 }
 
 static inline void
-as_event_init_retry_timer(as_event_command* cmd)
+as_event_set_retry_timer(as_event_command* cmd)
 {
-	uv_timer_init(cmd->event_loop->loop, &cmd->timer);
-	cmd->timer.data = cmd;
 	uv_timer_start(&cmd->timer, as_uv_retry, 0, 0);
 }
 
@@ -578,7 +576,7 @@ as_event_repeat_socket_timer(as_event_command* cmd)
 }
 
 static inline void
-as_event_init_retry_timer(as_event_command* cmd)
+as_event_set_retry_timer(as_event_command* cmd)
 {
 	evtimer_assign(&cmd->timer, cmd->event_loop->loop, as_libevent_retry, cmd);
 	struct timeval tv = {0,0};
@@ -664,7 +662,7 @@ as_event_repeat_socket_timer(as_event_command* cmd)
 }
 
 static inline void
-as_event_init_retry_timer(as_event_command* cmd)
+as_event_set_retry_timer(as_event_command* cmd)
 {
 }
 
